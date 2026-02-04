@@ -48,6 +48,7 @@ local generator_model_config = {
             "rlm_retriever_backend_preset": "sambanova",  // Uses DeepSeek-V3.1 via SambaNova
             "rlm_retriever_max_bullets": 25,
             "rlm_retriever_verbose": true,
+            "rlm_retriever_enable_logging": true,  // Enabled by default; logs saved to task folder
         },
         "dataset": "test_normal",
     }

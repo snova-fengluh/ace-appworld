@@ -20,6 +20,7 @@ if RLM_PATH not in sys.path:
     sys.path.insert(0, RLM_PATH)
 
 from rlm import RLM
+from rlm.logger import RLMLogger
 
 
 # Core bullet IDs that should always be included (critical rules)
@@ -238,6 +239,7 @@ class PlaybookRetriever:
         core_bullet_ids: list[str] | None = None,
         max_iterations: int = 15,
         verbose: bool = False,
+        log_dir: str | None = None,
     ):
         """Initialize the PlaybookRetriever.
 
@@ -255,6 +257,10 @@ class PlaybookRetriever:
                            Defaults to DEFAULT_CORE_BULLET_IDS.
             max_iterations: Maximum RLM iterations before timeout.
             verbose: Whether to print verbose output during retrieval.
+            log_dir: Directory to save RLM execution logs (JSON-Lines format).
+                    If provided, logs all iterations with prompts, responses,
+                    and executed code to files named:
+                    playbook_retriever_{timestamp}_{uuid}.jsonl
 
         Examples:
             # Use OpenAI (default)
@@ -280,6 +286,7 @@ class PlaybookRetriever:
         self.core_bullet_ids = core_bullet_ids if core_bullet_ids is not None else DEFAULT_CORE_BULLET_IDS
         self.max_iterations = max_iterations
         self.verbose = verbose
+        self.log_dir = log_dir
 
         if self.verbose:
             print(f"[PlaybookRetriever] Backend: {self.backend}")
@@ -341,6 +348,14 @@ class PlaybookRetriever:
             context_size = len(str(context))
             print(f"[PlaybookRetriever] Context size: {context_size} chars (reduced from {len(playbook_text)})")
 
+        # Create logger if log_dir is specified
+        logger = None
+        if self.log_dir:
+            os.makedirs(self.log_dir, exist_ok=True)
+            logger = RLMLogger(log_dir=self.log_dir, file_name="playbook_retriever")
+            if self.verbose:
+                print(f"[PlaybookRetriever] Logging to: {self.log_dir}")
+
         # Create RLM instance
         rlm = RLM(
             backend=self.backend,
@@ -349,6 +364,7 @@ class PlaybookRetriever:
             max_iterations=self.max_iterations,
             custom_system_prompt=RETRIEVER_SYSTEM_PROMPT,
             verbose=self.verbose,
+            logger=logger,
         )
 
         # Build the root prompt (shown to the model)

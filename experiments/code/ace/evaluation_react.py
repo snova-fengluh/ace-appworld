@@ -28,6 +28,7 @@ class SimplifiedReActAgent(Agent):
         rlm_retriever_max_iterations: int = 5,  # Max RLM iterations (lower = faster)
         rlm_retriever_core_bullet_ids: list[str] | None = None,
         rlm_retriever_verbose: bool = False,
+        rlm_retriever_enable_logging: bool = True,  # Save RLM logs to task output folder
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -48,6 +49,7 @@ class SimplifiedReActAgent(Agent):
         self.rlm_retriever_max_iterations = rlm_retriever_max_iterations
         self.rlm_retriever_core_bullet_ids = rlm_retriever_core_bullet_ids
         self.rlm_retriever_verbose = rlm_retriever_verbose
+        self.rlm_retriever_enable_logging = rlm_retriever_enable_logging
 
         if os.path.exists(trained_playbook_file_path):
             playbook = read_file(trained_playbook_file_path.replace("/", os.sep))
@@ -63,6 +65,9 @@ class SimplifiedReActAgent(Agent):
             # Use RLM-based retriever to filter playbook
             from appworld_experiments.code.ace.playbook_retriever import PlaybookRetriever
 
+            # Use task-specific output directory for RLM logs if enabled
+            rlm_log_dir = world.output_directory if self.rlm_retriever_enable_logging else None
+
             retriever = PlaybookRetriever(
                 backend_preset=self.rlm_retriever_backend_preset,
                 backend=self.rlm_retriever_backend,
@@ -71,6 +76,7 @@ class SimplifiedReActAgent(Agent):
                 max_iterations=self.rlm_retriever_max_iterations,
                 core_bullet_ids=self.rlm_retriever_core_bullet_ids,
                 verbose=self.rlm_retriever_verbose,
+                log_dir=rlm_log_dir,
             )
             filtered_playbook = retriever.retrieve(
                 task_instruction=world.task.instruction,
