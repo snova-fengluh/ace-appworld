@@ -19,6 +19,15 @@ class SimplifiedReActAgent(Agent):
         ignore_multiple_calls: bool = True,
         max_prompt_length: int | None = None,
         max_output_length: int = 400000,
+        # RLM Retriever settings
+        use_rlm_retriever: bool = False,
+        rlm_retriever_backend_preset: str | None = None,  # "openai", "sambanova", "anthropic"
+        rlm_retriever_backend: str | None = None,  # Override preset with explicit backend
+        rlm_retriever_backend_kwargs: dict[str, Any] | None = None,  # Override preset with explicit kwargs
+        rlm_retriever_max_bullets: int = 20,
+        rlm_retriever_max_iterations: int = 5,  # Max RLM iterations (lower = faster)
+        rlm_retriever_core_bullet_ids: list[str] | None = None,
+        rlm_retriever_verbose: bool = False,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -30,6 +39,16 @@ class SimplifiedReActAgent(Agent):
         self.partial_code_regex = r".*```python\n(.*)"
         self.full_code_regex = r"```python\n(.*?)```"
 
+        # RLM Retriever configuration
+        self.use_rlm_retriever = use_rlm_retriever
+        self.rlm_retriever_backend_preset = rlm_retriever_backend_preset
+        self.rlm_retriever_backend = rlm_retriever_backend
+        self.rlm_retriever_backend_kwargs = rlm_retriever_backend_kwargs
+        self.rlm_retriever_max_bullets = rlm_retriever_max_bullets
+        self.rlm_retriever_max_iterations = rlm_retriever_max_iterations
+        self.rlm_retriever_core_bullet_ids = rlm_retriever_core_bullet_ids
+        self.rlm_retriever_verbose = rlm_retriever_verbose
+
         if os.path.exists(trained_playbook_file_path):
             playbook = read_file(trained_playbook_file_path.replace("/", os.sep))
             self.playbook = playbook
@@ -38,6 +57,34 @@ class SimplifiedReActAgent(Agent):
 
     def initialize(self, world: AppWorld):
         super().initialize(world)
+
+        # Determine which playbook to use
+        if self.use_rlm_retriever:
+            # Use RLM-based retriever to filter playbook
+            from appworld_experiments.code.ace.playbook_retriever import PlaybookRetriever
+
+            retriever = PlaybookRetriever(
+                backend_preset=self.rlm_retriever_backend_preset,
+                backend=self.rlm_retriever_backend,
+                backend_kwargs=self.rlm_retriever_backend_kwargs,
+                max_bullets=self.rlm_retriever_max_bullets,
+                max_iterations=self.rlm_retriever_max_iterations,
+                core_bullet_ids=self.rlm_retriever_core_bullet_ids,
+                verbose=self.rlm_retriever_verbose,
+            )
+            filtered_playbook = retriever.retrieve(
+                task_instruction=world.task.instruction,
+                playbook_text=self.playbook,
+                app_descriptions=world.task.app_descriptions,
+            )
+            if self.rlm_retriever_verbose:
+                original_len = len(self.playbook)
+                filtered_len = len(filtered_playbook)
+                print(f"[RLM Retriever] Playbook reduced from {original_len} to {filtered_len} chars "
+                      f"({100 * filtered_len / original_len:.1f}%)")
+        else:
+            filtered_playbook = self.playbook
+
         template = Template(self.generator_prompt_template)
         app_descriptions = json.dumps(
             [{"name": k, "description": v} for (k, v) in world.task.app_descriptions.items()],
@@ -48,7 +95,7 @@ class SimplifiedReActAgent(Agent):
             "main_user": world.task.supervisor,
             "app_descriptions": app_descriptions,
             "relevant_apis": str(world.task.ground_truth.required_apis),
-            "playbook": self.playbook,
+            "playbook": filtered_playbook,
         }
         output_str = template.render(template_params)
         output_str = self.truncate_input(output_str) + "\n\n"
