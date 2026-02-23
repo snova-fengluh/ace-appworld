@@ -132,6 +132,11 @@ Prioritize bullets in this order:
 3. Before returning, PRINT `selected_ids` to verify it contains IDs from your analysis
 4. NEVER hardcode or fabricate IDs like ['shr-00022', 'shr-00023', ...] - this is WRONG
 
+## HOW TO COMPLETE THIS TASK
+1. Run ONE code block to analyze the task and select bullet IDs into `selected_ids`
+2. After the code executes successfully, you MUST write `FINAL_VAR(selected_ids)` on its own line (NOT inside a code block) to return the result
+3. Do NOT keep iterating - once you have a full list of selected_ids, immediately output FINAL_VAR(selected_ids)
+
 ## Code Template (follow this structure)
 ```repl
 # Step 1: Extract action verbs from task
@@ -176,13 +181,13 @@ for bid, sc in scored:
 print(f"Selected {len(selected_ids)} bullets: {selected_ids[:10]}...")  # Verify IDs are real
 ```
 
+After the code above executes, IMMEDIATELY output this line (not in a code block):
 FINAL_VAR(selected_ids)
 
-## FINAL CHECKLIST
-- Variable is named `selected_ids`
-- All IDs came from iterating `context['bullets']`
-- Printed `selected_ids` to verify before returning
-- Did NOT create a new list at the end with made-up IDs
+## IMPORTANT: FINAL_VAR is a termination signal
+- FINAL_VAR(selected_ids) tells the system you are DONE and returns the variable
+- You MUST write it as a standalone line, NOT inside ```repl``` blocks
+- Do NOT continue iterating after your code works - just output FINAL_VAR(selected_ids)
 """
 
 
@@ -345,8 +350,21 @@ class PlaybookRetriever:
         Returns:
             Filtered playbook text containing only relevant bullets.
         """
+        # Track selection metadata for logging
+        self._selection_metadata = {
+            "task_instruction": task_instruction,
+            "total_bullets": 0,
+            "rlm_selected_ids": [],
+            "rlm_raw_response": "",
+            "parse_success": False,
+            "used_fallback": False,
+            "final_selected_ids": [],
+            "final_bullet_count": 0,
+        }
+
         # Parse all bullets from playbook
         all_bullets = parse_playbook_bullets(playbook_text)
+        self._selection_metadata["total_bullets"] = len(all_bullets)
 
         if not all_bullets:
             print("[PlaybookRetriever] Warning: No bullets found in playbook, returning original")
@@ -416,8 +434,21 @@ Return a JSON list of bullet IDs. Core bullets (always include): {self.core_bull
             result = rlm.completion(prompt=context, root_prompt=root_prompt)
             response = result.response
 
+            # Track the raw RLM response
+            self._selection_metadata["rlm_raw_response"] = response[:2000] if response else ""
+
             # Parse the response to extract bullet IDs
             selected_ids = self._parse_bullet_ids(response)
+
+            # If parsing from response failed, try extracting from RLM log (REPL outputs)
+            if not selected_ids and logger:
+                if self.verbose:
+                    print("[PlaybookRetriever] Response parsing failed, extracting from REPL outputs...")
+                selected_ids = self._extract_ids_from_rlm_log(logger.log_file_path)
+                self._selection_metadata["extracted_from_repl"] = True
+
+            self._selection_metadata["rlm_selected_ids"] = selected_ids.copy()
+            self._selection_metadata["parse_success"] = len(selected_ids) > 0
 
             if self.verbose:
                 print(f"[PlaybookRetriever] RLM selected {len(selected_ids)} bullets")
@@ -427,6 +458,8 @@ Return a JSON list of bullet IDs. Core bullets (always include): {self.core_bull
             print(f"[PlaybookRetriever] RLM retrieval failed: {e}")
             print("[PlaybookRetriever] Falling back to core bullets + heuristic selection")
             selected_ids = self._fallback_selection(task_instruction, all_bullets)
+            self._selection_metadata["used_fallback"] = True
+            self._selection_metadata["rlm_selected_ids"] = selected_ids.copy()
 
         # Ensure core bullets are included
         for core_id in self.core_bullet_ids:
@@ -447,11 +480,21 @@ Return a JSON list of bullet IDs. Core bullets (always include): {self.core_bull
                 seen.add(bullet['id'])
                 unique_bullets.append(bullet)
 
+        # Update final selection metadata
+        self._selection_metadata["final_selected_ids"] = [b['id'] for b in unique_bullets]
+        self._selection_metadata["final_bullet_count"] = len(unique_bullets)
+
         if self.verbose:
             print(f"[PlaybookRetriever] Final selection: {len(unique_bullets)} bullets")
 
         # Format back to playbook text
-        return format_bullets_as_playbook(unique_bullets, playbook_text)
+        final_playbook = format_bullets_as_playbook(unique_bullets, playbook_text)
+
+        # Write selection log to file if log_dir is specified
+        if self.log_dir:
+            self._write_selection_log(unique_bullets, final_playbook)
+
+        return final_playbook
 
     def _parse_bullet_ids(self, response: str) -> list[str]:
         """Parse bullet IDs from RLM response.
@@ -489,6 +532,65 @@ Return a JSON list of bullet IDs. Core bullets (always include): {self.core_bull
 
         # Fallback: empty list
         return []
+
+    def _extract_ids_from_rlm_log(self, log_file_path: str) -> list[str]:
+        """Extract selected_ids from RLM log file by parsing REPL outputs.
+
+        When the RLM's final response doesn't contain valid IDs (e.g., model
+        hallucination), we can recover the computed selected_ids from the
+        code execution outputs stored in the log.
+
+        Args:
+            log_file_path: Path to the RLM log file (JSONL format).
+
+        Returns:
+            List of bullet IDs extracted from REPL outputs, or empty list if not found.
+        """
+        if not os.path.exists(log_file_path):
+            return []
+
+        selected_ids = []
+        try:
+            with open(log_file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    entry = json.loads(line)
+                    if entry.get('type') != 'iteration':
+                        continue
+
+                    # Check code_blocks for selected_ids in stdout or locals
+                    code_blocks = entry.get('code_blocks', [])
+                    for block in code_blocks:
+                        result = block.get('result', {})
+
+                        # Try to extract from stdout (e.g., JSON dump of selected_ids)
+                        stdout = result.get('stdout', '')
+                        if 'shr-' in stdout or 'api-' in stdout or 'code-' in stdout:
+                            # Look for JSON array in stdout
+                            ids = self._parse_bullet_ids(stdout)
+                            if len(ids) > len(selected_ids):
+                                selected_ids = ids
+
+                        # Try to extract from locals
+                        locals_dict = result.get('locals', {})
+                        if 'selected_ids' in locals_dict:
+                            local_ids = locals_dict['selected_ids']
+                            if isinstance(local_ids, list) and len(local_ids) > len(selected_ids):
+                                # Validate IDs
+                                valid_ids = [
+                                    str(id_).strip() for id_ in local_ids
+                                    if id_ and re.match(r'^[a-z]{2,4}-\d{5}$', str(id_).strip(), re.IGNORECASE)
+                                ]
+                                if valid_ids:
+                                    selected_ids = valid_ids
+
+            if self.verbose and selected_ids:
+                print(f"[PlaybookRetriever] Extracted {len(selected_ids)} IDs from REPL outputs")
+
+        except Exception as e:
+            if self.verbose:
+                print(f"[PlaybookRetriever] Failed to extract from log: {e}")
+
+        return selected_ids
 
     def _fallback_selection(
         self,
@@ -551,3 +653,40 @@ Return a JSON list of bullet IDs. Core bullets (always include): {self.core_bull
         # Sort by score and take top max_bullets
         scored_bullets.sort(key=lambda x: x[1], reverse=True)
         return [b[0] for b in scored_bullets[:self.max_bullets]]
+
+    def _write_selection_log(
+        self,
+        selected_bullets: list[dict],
+        final_playbook: str,
+    ) -> None:
+        """Write the selection log to a file in the log directory.
+
+        Creates a file named 'selected_playbook.json' containing:
+        - Selection metadata (task, counts, success/failure)
+        - List of selected bullet IDs with their content
+        - The final formatted playbook text
+        """
+        from datetime import datetime
+
+        log_data = {
+            "timestamp": datetime.now().isoformat(),
+            "metadata": self._selection_metadata,
+            "selected_bullets": [
+                {
+                    "id": b["id"],
+                    "section": b.get("section", "general"),
+                    "content": b["content"],
+                }
+                for b in selected_bullets
+            ],
+            "final_playbook": final_playbook,
+        }
+
+        log_file_path = os.path.join(self.log_dir, "selected_playbook.json")
+        try:
+            with open(log_file_path, "w", encoding="utf-8") as f:
+                json.dump(log_data, f, indent=2, ensure_ascii=False)
+            if self.verbose:
+                print(f"[PlaybookRetriever] Selection log written to: {log_file_path}")
+        except Exception as e:
+            print(f"[PlaybookRetriever] Warning: Failed to write selection log: {e}")
