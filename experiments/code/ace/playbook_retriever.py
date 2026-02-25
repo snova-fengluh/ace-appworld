@@ -107,88 +107,24 @@ def get_backend_config(
     return final_backend, final_kwargs
 
 
-# Custom system prompt for playbook retrieval
-RETRIEVER_SYSTEM_PROMPT = """You are a playbook retrieval assistant. Select the most relevant guideline bullets for a task.
+# Default path to the retriever system prompt file
+DEFAULT_RETRIEVER_PROMPT_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "prompts", "playbook_retriever_prompt.txt"
+)
 
-## Context Available
-- `context['task_instruction']`: The task to perform
-- `context['bullets']`: List of bullets with 'id', 'section', 'content'
-- `context['app_descriptions']`: Available apps
-- `context['max_bullets']`: Maximum bullets to select
-- `context['core_bullet_ids']`: Required bullet IDs (always include these)
 
-## Selection Priority (IMPORTANT)
-Prioritize bullets in this order:
-1. **ACTION-RELATED bullets** (highest priority): Match verbs/actions in the task
-   - e.g., task says "add and remove friends" → find bullets about adding, removing, befriending, unfriending
-   - e.g., task says "send money" → find bullets about sending, transferring, payments
-   - e.g., task says "delete messages" → find bullets about deleting, removing
-2. **OPERATION bullets**: sync, compare, match, filter, paginate, iterate
-3. **APP-SPECIFIC bullets** (complementary): venmo, spotify, phone, gmail, etc.
+def load_retriever_prompt(prompt_file_path: str | None = None) -> str:
+    """Load the retriever system prompt from a file.
 
-## CRITICAL RULES
-1. Use ONLY the variable name `selected_ids` - do not create other variable names
-2. Every ID in `selected_ids` MUST come from `context['bullets']` - extract actual IDs, never generate sequential IDs
-3. Before returning, PRINT `selected_ids` to verify it contains IDs from your analysis
-4. NEVER hardcode or fabricate IDs like ['shr-00022', 'shr-00023', ...] - this is WRONG
+    Args:
+        prompt_file_path: Path to the prompt file. If None, uses default path.
 
-## HOW TO COMPLETE THIS TASK
-1. Run ONE code block to analyze the task and select bullet IDs into `selected_ids`
-2. After the code executes successfully, you MUST write `FINAL_VAR(selected_ids)` on its own line (NOT inside a code block) to return the result
-3. Do NOT keep iterating - once you have a full list of selected_ids, immediately output FINAL_VAR(selected_ids)
-
-## Code Template (follow this structure)
-```repl
-# Step 1: Extract action verbs from task
-task = context['task_instruction'].lower()
-action_keywords = []
-for word in ['add', 'remove', 'delete', 'send', 'create', 'update', 'find', 'get', 'list',
-             'sync', 'reset', 'befriend', 'unfriend', 'transfer', 'pay', 'cancel', 'search']:
-    if word in task:
-        action_keywords.append(word)
-print(f"Action keywords: {action_keywords}")
-
-# Step 2: Find app names in task
-app_keywords = [app for app in context['app_descriptions'].keys() if app in task]
-print(f"App keywords: {app_keywords}")
-
-# Step 3: Score and select bullets (action matches scored higher than app matches)
-selected_ids = list(context['core_bullet_ids'])  # Start with core bullets
-scored = []
-for b in context['bullets']:
-    if b['id'] in selected_ids:
-        continue
-    content = b['content'].lower()
-    score = 0
-    # Action keywords get higher weight
-    for kw in action_keywords:
-        if kw in content:
-            score += 3
-    # App keywords get lower weight
-    for kw in app_keywords:
-        if kw in content:
-            score += 1
-    if score > 0:
-        scored.append((b['id'], score))
-
-# Sort by score and add top bullets
-scored.sort(key=lambda x: -x[1])
-for bid, sc in scored:
-    if len(selected_ids) >= context['max_bullets']:
-        break
-    selected_ids.append(bid)
-
-print(f"Selected {len(selected_ids)} bullets: {selected_ids[:10]}...")  # Verify IDs are real
-```
-
-After the code above executes, IMMEDIATELY output this line (not in a code block):
-FINAL_VAR(selected_ids)
-
-## IMPORTANT: FINAL_VAR is a termination signal
-- FINAL_VAR(selected_ids) tells the system you are DONE and returns the variable
-- You MUST write it as a standalone line, NOT inside ```repl``` blocks
-- Do NOT continue iterating after your code works - just output FINAL_VAR(selected_ids)
-"""
+    Returns:
+        The prompt text.
+    """
+    path = prompt_file_path or DEFAULT_RETRIEVER_PROMPT_PATH
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
 
 def parse_playbook_bullets(playbook_text: str) -> list[dict]:
@@ -280,6 +216,7 @@ class PlaybookRetriever:
         max_iterations: int = 15,
         verbose: bool = False,
         log_dir: str | None = None,
+        prompt_file_path: str | None = None,
     ):
         """Initialize the PlaybookRetriever.
 
@@ -300,7 +237,9 @@ class PlaybookRetriever:
             log_dir: Directory to save RLM execution logs (JSON-Lines format).
                     If provided, logs all iterations with prompts, responses,
                     and executed code to files named:
-                    playbook_retriever_{timestamp}_{uuid}.jsonl
+                    playbook_retriever_{uuid}.jsonl
+            prompt_file_path: Path to the system prompt file. If None, uses default
+                            at experiments/prompts/playbook_retriever_prompt.txt
 
         Examples:
             # Use OpenAI (default)
@@ -327,6 +266,7 @@ class PlaybookRetriever:
         self.max_iterations = max_iterations
         self.verbose = verbose
         self.log_dir = log_dir
+        self.system_prompt = load_retriever_prompt(prompt_file_path)
 
         if self.verbose:
             print(f"[PlaybookRetriever] Backend: {self.backend}")
@@ -415,7 +355,7 @@ class PlaybookRetriever:
             backend_kwargs=self.backend_kwargs,
             environment="local",
             max_iterations=self.max_iterations,
-            custom_system_prompt=RETRIEVER_SYSTEM_PROMPT,
+            custom_system_prompt=self.system_prompt,
             verbose=self.verbose,
             logger=logger,
         )

@@ -29,6 +29,7 @@ class SimplifiedReActAgent(Agent):
         rlm_retriever_core_bullet_ids: list[str] | None = None,
         rlm_retriever_verbose: bool = False,
         rlm_retriever_enable_logging: bool = True,  # Save RLM logs to task output folder
+        rlm_retriever_prompt_file_path: str | None = None,  # Path to custom retriever prompt
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -50,6 +51,7 @@ class SimplifiedReActAgent(Agent):
         self.rlm_retriever_core_bullet_ids = rlm_retriever_core_bullet_ids
         self.rlm_retriever_verbose = rlm_retriever_verbose
         self.rlm_retriever_enable_logging = rlm_retriever_enable_logging
+        self.rlm_retriever_prompt_file_path = rlm_retriever_prompt_file_path
 
         if os.path.exists(trained_playbook_file_path):
             playbook = read_file(trained_playbook_file_path.replace("/", os.sep))
@@ -77,6 +79,7 @@ class SimplifiedReActAgent(Agent):
                 core_bullet_ids=self.rlm_retriever_core_bullet_ids,
                 verbose=self.rlm_retriever_verbose,
                 log_dir=rlm_log_dir,
+                prompt_file_path=self.rlm_retriever_prompt_file_path,
             )
             filtered_playbook = retriever.retrieve(
                 task_instruction=world.task.instruction,
